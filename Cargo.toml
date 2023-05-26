@@ -1,0 +1,13 @@
+[package]
+name = "sandbox"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+base64 = "0.21.0"
+ecdsa = { version = "0.16.7", features = ["hazmat"] }
+hex = "0.4.3"
+p256 = "0.13.2"
+rand = "0.8.5"
