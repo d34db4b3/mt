@@ -1,439 +1,102 @@
 use std::{
-    collections::HashSet,
+    collections::BTreeSet,
     fmt::{self, Display, Write},
-    iter, mem, ops,
+    iter, ops,
 };
 
 #[derive(PartialEq, Debug, Clone, PartialOrd, Eq, Ord)]
-enum Value {
-    Val(bool),
-    Var(String),
-}
+struct Variable(String);
 
-impl Value {
-    fn is_true(&self) -> bool {
-        match self {
-            Value::Val(true) => true,
-            _ => false,
-        }
-    }
-
-    fn is_false(&self) -> bool {
-        match self {
-            Value::Val(false) => true,
-            _ => false,
-        }
-    }
-}
-
-impl fmt::Display for Value {
+impl fmt::Display for Variable {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Value::Val(true) => f.write_char('1'),
-            Value::Val(false) => f.write_char('0'),
-            Value::Var(s) => f.write_str(s),
-        }
+        f.write_str(&self.0)
     }
 }
 
 #[derive(PartialEq, Debug, Clone, PartialOrd, Eq, Ord)]
-enum Expr {
-    And(Vec<Expr>),
-    Or(Vec<Expr>),
-    Not(Box<Expr>),
-    Xor(Vec<Expr>),
-    Value(Value),
+struct XorExpr(BTreeSet<Variable>);
+impl XorExpr {
+    fn new<S: ToString>(var: S) -> XorExpr {
+        XorExpr(iter::once(Variable(var.to_string())).collect())
+    }
 }
 
-impl fmt::Display for Expr {
+impl fmt::Display for XorExpr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Expr::And(exprs) => {
-                for (i, x) in exprs.iter().enumerate() {
-                    if i != 0 {
-                        f.write_char('&')?;
-                    }
-                    x.sub_fmt(f)?;
-                }
+        for (i, x) in self.0.iter().enumerate() {
+            if i != 0 {
+                f.write_char('^')?;
             }
-            Expr::Not(expr) => {
-                f.write_char('!')?;
-                expr.sub_fmt(f)?;
-            }
-            Expr::Xor(exprs) => {
-                for (i, x) in exprs.iter().enumerate() {
-                    if i != 0 {
-                        f.write_char('^')?;
-                    }
-                    x.sub_fmt(f)?;
-                }
-            }
-            Expr::Value(v) => v.fmt(f)?,
-            Expr::Or(exprs) => {
-                for (i, x) in exprs.iter().enumerate() {
-                    if i != 0 {
-                        f.write_char('|')?;
-                    }
-                    x.sub_fmt(f)?;
-                }
-            }
+            x.fmt(f)?;
         }
         Ok(())
     }
 }
 
-impl ops::BitOr for Expr {
-    type Output = Expr;
-
-    fn bitor(self, rhs: Self) -> Self::Output {
-        match (self, rhs) {
-            (Expr::Or(mut s), Expr::Or(r)) => {
-                s.extend(r.into_iter());
-                Expr::Or(s)
-            }
-            (Expr::Or(mut s), r) | (r, Expr::Or(mut s)) => {
-                s.push(r);
-                Expr::Or(s)
-            }
-            (s, r) => Expr::Or(vec![s, r]),
-        }
-    }
-}
-
-impl ops::BitAnd for Expr {
-    type Output = Expr;
-
-    fn bitand(self, rhs: Self) -> Self::Output {
-        match (self, rhs) {
-            (Expr::And(mut s), Expr::And(r)) => {
-                s.extend(r.into_iter());
-                Expr::And(s)
-            }
-            (Expr::And(mut s), r) | (r, Expr::And(mut s)) => {
-                s.push(r);
-                Expr::And(s)
-            }
-            (s, r) => Expr::And(vec![s, r]),
-        }
-    }
-}
-
-impl ops::BitXor for Expr {
-    type Output = Expr;
+impl ops::BitXor for XorExpr {
+    type Output = XorExpr;
 
     fn bitxor(self, rhs: Self) -> Self::Output {
-        match (self, rhs) {
-            (Expr::Xor(mut s), Expr::Xor(r)) => {
-                s.extend(r.into_iter());
-                Expr::Xor(s)
+        // a^a=0
+        let mut s = self.0;
+        for v in rhs.0 {
+            if !s.remove(&v) {
+                s.insert(v);
             }
-            (Expr::Xor(mut s), r) | (r, Expr::Xor(mut s)) => {
-                s.push(r);
-                Expr::Xor(s)
-            }
-            (s, r) => Expr::Xor(vec![s, r]),
         }
+        XorExpr(s)
     }
-}
-
-impl ops::Not for Expr {
-    type Output = Expr;
-
-    fn not(self) -> Self::Output {
-        match self {
-            Expr::Not(s) => *s,
-            s => Expr::Not(Box::new(s)),
-        }
-    }
-}
-
-impl Expr {
-    fn sub_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Expr::And(_) | Expr::Xor(_) | Expr::Or(_) => write!(f, "({self})"),
-            Expr::Not(_) => fmt::Display::fmt(&self, f),
-            Expr::Value(v) => fmt::Display::fmt(&v, f),
-        }
-    }
-    fn var<S: Into<String>>(s: S) -> Self {
-        Expr::Value(Value::Var(s.into()))
-    }
-    const fn val(b: bool) -> Self {
-        Expr::Value(Value::Val(b))
-    }
-    fn is_true(&self) -> bool {
-        match self {
-            Expr::Value(v) => v.is_true(),
-            _ => false,
-        }
-    }
-    fn is_false(&self) -> bool {
-        match self {
-            Expr::Value(v) => v.is_false(),
-            _ => false,
-        }
-    }
-    fn simplify(&mut self) {
-        match self {
-            Expr::And(exprs) => {
-                for expr in exprs.iter_mut() {
-                    expr.simplify();
-                }
-                let mut i = 0;
-                while i < exprs.len() {
-                    if matches!(exprs[i], Expr::And(_)) {
-                        let Expr::And(sub_exprs) = exprs.remove(i) else {unreachable!()};
-                        exprs.extend(sub_exprs);
-                    } else {
-                        i += 1;
-                    }
-                }
-                // A&0=0 => set to false if any expr is false
-                if exprs.iter().any(|x| x.is_false()) {
-                    *self = Expr::val(false);
-                } else {
-                    // A&1=A => remove all 1's
-                    exprs.retain(|x| !x.is_true());
-                    // A&A=A => dedup
-                    exprs.sort();
-                    exprs.dedup();
-                    match exprs.len() {
-                        // no element => true
-                        0 => *self = Expr::val(true),
-                        // only 1 element => element
-                        1 => *self = exprs.pop().unwrap(),
-                        _ => {}
-                    }
-                }
-            }
-            Expr::Or(exprs) => {
-                for expr in exprs.iter_mut() {
-                    expr.simplify();
-                }
-                let mut i = 0;
-                while i < exprs.len() {
-                    if matches!(exprs[i], Expr::Or(_)) {
-                        let Expr::Or(sub_exprs) = exprs.remove(i) else {unreachable!()};
-                        exprs.extend(sub_exprs);
-                    } else {
-                        i += 1;
-                    }
-                }
-                // A|1=1 => set to true if any expr is true
-                if exprs.iter().any(|x| x.is_true()) {
-                    *self = Expr::val(true);
-                } else {
-                    // A|0=A => remove all 0's
-                    exprs.retain(|x| !x.is_false());
-                    // A|A=A => dedup
-                    exprs.sort();
-                    exprs.dedup();
-                    match exprs.len() {
-                        // no element => false
-                        0 => *self = Expr::val(false),
-                        // only 1 element => element
-                        1 => *self = exprs.pop().unwrap(),
-                        _ => {}
-                    }
-                }
-            }
-            Expr::Not(expr) => {
-                expr.simplify();
-                if expr.is_true() {
-                    *self = Expr::val(false)
-                } else if expr.is_false() {
-                    *self = Expr::val(true)
-                }
-            }
-            Expr::Xor(exprs) => {
-                for expr in exprs.iter_mut() {
-                    expr.simplify();
-                }
-                let mut i = 0;
-                while i < exprs.len() {
-                    if matches!(exprs[i], Expr::Xor(_)) {
-                        let Expr::Xor(sub_exprs) = exprs.remove(i) else {unreachable!()};
-                        exprs.extend(sub_exprs);
-                    } else {
-                        i += 1;
-                    }
-                }
-                // A^0=A => remove all 0's
-                exprs.retain(|x| !x.is_false());
-                // A^1=!A => invert expr
-                let mut invert = false;
-                exprs.retain(|x| {
-                    if x.is_true() {
-                        invert = !invert;
-                        false
-                    } else {
-                        true
-                    }
-                });
-                // A^A=0 => remove duplicates 2 by 2
-                exprs.sort();
-                let mut i = 0;
-                while i < exprs.len() - 1 {
-                    if exprs[i] == exprs[i + 1] {
-                        exprs.remove(i);
-                        exprs.remove(i);
-                    } else {
-                        i += 1;
-                    }
-                }
-                match exprs.len() {
-                    // no element => false
-                    0 => *self = Expr::val(invert),
-                    // only 1 element => element
-                    1 => {
-                        *self = if invert {
-                            !exprs.pop().unwrap()
-                        } else {
-                            exprs.pop().unwrap()
-                        }
-                    }
-                    _ => {
-                        if invert {
-                            // temporarily replace with dummy value
-                            let s = mem::replace(self, Expr::val(false));
-                            *self = Expr::Not(Box::new(s));
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    // fn sexpr(&self) -> String {
-    //     match self {
-    //         Expr::And(exprs) => {
-    //             let (first, rest) = exprs.split_first().unwrap();
-    //             let mut s = format!("{}", first.sexpr());
-    //             for next in rest {
-    //                 s = format!("(and {} {s})", next.sexpr())
-    //             }
-    //             s
-    //         }
-    //         Expr::Or(exprs) => {
-    //             let (first, rest) = exprs.split_first().unwrap();
-    //             let mut s = format!("{}", first.sexpr());
-    //             for next in rest {
-    //                 s = format!("(or {} {s})", next.sexpr())
-    //             }
-    //             s
-    //         }
-    //         Expr::Not(expr) => {
-    //             format!("(not {})", expr.sexpr())
-    //         }
-    //         Expr::Xor(exprs) => {
-    //             let (first, rest) = exprs.split_first().unwrap();
-    //             let mut s = format!("{}", first.sexpr());
-    //             for next in rest {
-    //                 s = format!("(xor {} {s})", next.sexpr())
-    //             }
-    //             s
-    //         }
-    //         Expr::Value(v) => match v {
-    //             Value::Val(true) => format!("true"),
-    //             Value::Val(false) => format!("false"),
-    //             Value::Var(v) => format!("{v}"),
-    //         },
-    //     }
-    // }
-}
-
-#[test]
-fn test_simplify() {
-    let mut v = Expr::var("a") | Expr::val(true);
-    v.simplify();
-    assert_eq!(v, Expr::val(true));
-    let mut v = Expr::var("a") | Expr::val(false);
-    v.simplify();
-    assert_eq!(v, Expr::var("a"));
-    let mut v = Expr::var("a") & Expr::val(true);
-    v.simplify();
-    assert_eq!(v, Expr::var("a"));
-    let mut v = Expr::var("a") & Expr::val(false);
-    v.simplify();
-    assert_eq!(v, Expr::val(false));
-    let mut v = Expr::var("a") ^ Expr::val(true);
-    v.simplify();
-    assert_eq!(v, !Expr::var("a"));
-    let mut v = Expr::var("a") ^ Expr::val(false);
-    v.simplify();
-    assert_eq!(v, Expr::var("a"));
-    let mut v = !Expr::val(true);
-    v.simplify();
-    assert_eq!(v, Expr::val(false));
-    let mut v = !Expr::val(false);
-    v.simplify();
-    assert_eq!(v, Expr::val(true));
-    let mut v = Expr::And(vec![
-        Expr::var("a"),
-        Expr::And(vec![
-            Expr::var("b"),
-            Expr::And(vec![Expr::var("c"), Expr::var("d")]),
-        ]),
-    ]);
-    v.simplify();
-    assert_eq!(
-        v,
-        Expr::And(vec![
-            Expr::var("a"),
-            Expr::var("b"),
-            Expr::var("c"),
-            Expr::var("d")
-        ])
-    );
-    let mut v = Expr::Or(vec![
-        Expr::var("a"),
-        Expr::Or(vec![
-            Expr::var("b"),
-            Expr::Or(vec![Expr::var("c"), Expr::var("d")]),
-        ]),
-    ]);
-    v.simplify();
-    assert_eq!(
-        v,
-        Expr::Or(vec![
-            Expr::var("a"),
-            Expr::var("b"),
-            Expr::var("c"),
-            Expr::var("d")
-        ])
-    );
-    let mut v = Expr::Xor(vec![
-        Expr::var("a"),
-        Expr::Xor(vec![
-            Expr::var("b"),
-            Expr::Xor(vec![Expr::var("c"), Expr::var("d")]),
-        ]),
-    ]);
-    v.simplify();
-    assert_eq!(
-        v,
-        Expr::Xor(vec![
-            Expr::var("a"),
-            Expr::var("b"),
-            Expr::var("c"),
-            Expr::var("d")
-        ])
-    );
 }
 
 #[derive(Debug, Clone)]
-struct Expr32([Expr; 32]);
+enum XorExprBit {
+    Expr(XorExpr),
+    Value(bool),
+}
 
-impl Expr32 {
+impl fmt::Display for XorExprBit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            XorExprBit::Expr(x) => fmt::Debug::fmt(&x.0, f),
+            XorExprBit::Value(v) => {
+                if *v {
+                    1.fmt(f)
+                } else {
+                    0.fmt(f)
+                }
+            }
+        }
+    }
+}
+
+impl ops::BitXor for XorExprBit {
+    type Output = XorExprBit;
+
+    fn bitxor(self, rhs: Self) -> Self::Output {
+        match (self, rhs) {
+            (XorExprBit::Value(s), XorExprBit::Value(r)) => XorExprBit::Value(s ^ r),
+            (XorExprBit::Expr(s), XorExprBit::Expr(r)) => XorExprBit::Expr(s ^ r),
+            (XorExprBit::Expr(x), XorExprBit::Value(v))
+            | (XorExprBit::Value(v), XorExprBit::Expr(x)) => {
+                if v {
+                    panic!("x^1 is not supported")
+                } else {
+                    XorExprBit::Expr(x)
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct XorExpr32([XorExprBit; 32]);
+
+impl XorExpr32 {
     fn var<S: Display>(s: S) -> Self {
-        Expr32::gen(|i| Expr::var(format!("{s}_{i}")))
+        XorExpr32::gen(|i| XorExprBit::Expr(XorExpr::new(format!("{s}_{i}"))))
     }
-    fn val(v: u32) -> Self {
-        Expr32::gen(|i| Expr::val((v >> i) & 1 == 1))
-    }
-    fn gen<F: Fn(usize) -> Expr>(op: F) -> Self {
-        Expr32([
+    fn gen<F: Fn(usize) -> XorExprBit>(op: F) -> Self {
+        XorExpr32([
             op(0),
             op(1),
             op(2),
@@ -468,10 +131,14 @@ impl Expr32 {
             op(31),
         ])
     }
-    fn apply_all_bits_with<F: Fn(Expr, Expr) -> Expr>(self, rhs: Self, op: F) -> Self {
+    fn apply_all_bits_with<F: Fn(XorExprBit, XorExprBit) -> XorExprBit>(
+        self,
+        rhs: Self,
+        op: F,
+    ) -> Self {
         let mut s = self.0.into_iter();
         let mut r = rhs.0.into_iter();
-        Expr32(
+        XorExpr32(
             iter::repeat_with(|| op(s.next().unwrap(), r.next().unwrap()))
                 .take(32)
                 .collect::<Vec<_>>()
@@ -479,77 +146,17 @@ impl Expr32 {
                 .unwrap(),
         )
     }
-    fn apply_all_bits<F: Fn(Expr) -> Expr>(self, op: F) -> Self {
-        let mut s = self.0.into_iter();
-        Expr32(
-            iter::repeat_with(|| op(s.next().unwrap()))
-                .take(32)
-                .collect::<Vec<_>>()
-                .try_into()
-                .unwrap(),
-        )
-    }
-    fn simplify(&mut self) {
-        for bit in &mut self.0 {
-            bit.simplify();
-        }
-    }
-
-    fn shift_right(self, n: u32) -> Self {
-        let s = self.0.into_iter();
-        Expr32(
-            s.skip(n as usize)
-                .chain(iter::repeat_with(|| Expr::val(false)))
-                .take(32)
-                .collect::<Vec<_>>()
-                .try_into()
-                .unwrap(),
-        )
-    }
-    fn expand_bit(bit: Expr) -> Self {
-        Expr32(
-            iter::repeat(bit)
-                .take(32)
-                .collect::<Vec<_>>()
-                .try_into()
-                .unwrap(),
-        )
-    }
 }
 
-impl ops::BitAnd for Expr32 {
-    type Output = Expr32;
-
-    fn bitand(self, rhs: Self) -> Self::Output {
-        self.apply_all_bits_with(rhs, |a, b| a & b)
-    }
-}
-
-impl ops::BitOr for Expr32 {
-    type Output = Expr32;
-
-    fn bitor(self, rhs: Self) -> Self::Output {
-        self.apply_all_bits_with(rhs, |a, b| a | b)
-    }
-}
-
-impl ops::BitXor for Expr32 {
-    type Output = Expr32;
+impl ops::BitXor for XorExpr32 {
+    type Output = XorExpr32;
 
     fn bitxor(self, rhs: Self) -> Self::Output {
         self.apply_all_bits_with(rhs, |a, b| a ^ b)
     }
 }
 
-impl ops::Not for Expr32 {
-    type Output = Expr32;
-
-    fn not(self) -> Self::Output {
-        self.apply_all_bits(|a| !a)
-    }
-}
-
-impl fmt::Display for Expr32 {
+impl fmt::Display for XorExpr32 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         struct Shim<T>(T);
         impl<T: fmt::Display> fmt::Debug for Shim<T> {
@@ -567,9 +174,6 @@ impl fmt::Display for Expr32 {
 
 const N: usize = 624;
 const M: usize = 397;
-
-const LOWER_MASK: u32 = 0x7FFFFFFF;
-const UPPER_MASK: u32 = 0x80000000;
 
 const A: u32 = 0x9908B0DF;
 
@@ -672,15 +276,15 @@ impl Iterator for SeqGen {
 }
 
 struct MT19937Breaker {
-    mt: [Expr32; N],
+    mt: [XorExpr32; N],
     i: usize,
-    system: Vec<(Expr, bool)>,
+    system: Vec<(XorExpr, bool)>,
 }
 impl MT19937Breaker {
     fn new() -> Self {
         Self {
             mt: (0..N)
-                .map(|n| Expr32::var(format_args!("mt_{n}")))
+                .map(|n| XorExpr32::var(format_args!("mt_{n}")))
                 .collect::<Vec<_>>()
                 .try_into()
                 .unwrap(),
@@ -690,12 +294,48 @@ impl MT19937Breaker {
     }
     fn twist(&mut self) {
         for i in 0..N {
-            let x = (self.mt[i].clone() & Expr32::val(UPPER_MASK))
-                | (self.mt[(i + 1) % N].clone() & Expr32::val(LOWER_MASK));
-            let mut x_a = x.clone().shift_right(1);
-            x_a = x_a ^ (Expr32::expand_bit(x.0[0].clone()) & Expr32::val(A));
+            let x_0 = self.mt[(i + 1) % N].0[0].clone();
+            let x_a = XorExpr32([
+                self.mt[(i + 1) % N].0[1].clone(),
+                self.mt[(i + 1) % N].0[2].clone(),
+                self.mt[(i + 1) % N].0[3].clone(),
+                self.mt[(i + 1) % N].0[4].clone(),
+                self.mt[(i + 1) % N].0[5].clone(),
+                self.mt[(i + 1) % N].0[6].clone(),
+                self.mt[(i + 1) % N].0[7].clone(),
+                self.mt[(i + 1) % N].0[8].clone(),
+                self.mt[(i + 1) % N].0[9].clone(),
+                self.mt[(i + 1) % N].0[10].clone(),
+                self.mt[(i + 1) % N].0[11].clone(),
+                self.mt[(i + 1) % N].0[12].clone(),
+                self.mt[(i + 1) % N].0[13].clone(),
+                self.mt[(i + 1) % N].0[14].clone(),
+                self.mt[(i + 1) % N].0[15].clone(),
+                self.mt[(i + 1) % N].0[16].clone(),
+                self.mt[(i + 1) % N].0[17].clone(),
+                self.mt[(i + 1) % N].0[18].clone(),
+                self.mt[(i + 1) % N].0[19].clone(),
+                self.mt[(i + 1) % N].0[20].clone(),
+                self.mt[(i + 1) % N].0[21].clone(),
+                self.mt[(i + 1) % N].0[22].clone(),
+                self.mt[(i + 1) % N].0[23].clone(),
+                self.mt[(i + 1) % N].0[24].clone(),
+                self.mt[(i + 1) % N].0[25].clone(),
+                self.mt[(i + 1) % N].0[26].clone(),
+                self.mt[(i + 1) % N].0[27].clone(),
+                self.mt[(i + 1) % N].0[28].clone(),
+                self.mt[(i + 1) % N].0[29].clone(),
+                self.mt[(i + 1) % N].0[30].clone(),
+                self.mt[i].0[31].clone(),
+                XorExprBit::Value(false),
+            ]) ^ XorExpr32::gen(|i| {
+                if A >> i & 1 == 1 {
+                    x_0.clone()
+                } else {
+                    XorExprBit::Value(false)
+                }
+            });
             self.mt[i] = self.mt[(i + M) % N].clone() ^ x_a;
-            self.mt[i].simplify();
         }
     }
     fn feedbit(&mut self, b: bool) {
@@ -704,197 +344,146 @@ impl MT19937Breaker {
             self.i = 0;
         }
 
-        let mut y = self.mt[self.i].0[31].clone()
+        let y = self.mt[self.i].0[31].clone()
             ^ self.mt[self.i].0[24].clone()
             ^ self.mt[self.i].0[16].clone()
             ^ self.mt[self.i].0[27].clone();
         self.i += 1;
-        y.simplify();
-        self.system.push((y, b));
+        let XorExprBit::Expr(x) = y else {panic!("expected expr")};
+        self.system.push((x, b));
     }
-}
-
-#[test]
-fn test_impl() {
-    const U: u32 = 11;
-    const D: u32 = 0xFFFFFFFF;
-    const S: u32 = 7;
-    const B: u32 = 0x9D2C5680;
-    const T: u32 = 15;
-    const C: u32 = 0xEFC60000;
-    const L: u32 = 18;
-
-    struct MT19937 {
-        mt: [u32; N],
-        i: usize,
-    }
-
-    impl MT19937 {
-        fn from_state(i: usize, state: [u32; N]) -> Self {
-            Self { mt: state, i }
-        }
-        fn twist(&mut self) {
-            for i in 0..N {
-                let x = (self.mt[i] & UPPER_MASK) | (self.mt[(i + 1) % N] & LOWER_MASK);
-                let mut x_a = x >> 1;
-                x_a = x_a ^ (if x & 1 == 1 { 0xffffffff } else { 0 } & A);
-                self.mt[i] = self.mt[(i + M) % N] ^ x_a
-            }
-        }
-        fn getrandbits(&mut self, n: usize) -> u32 {
-            if self.i >= N {
-                self.twist();
-                self.i = 0;
-            }
-
-            let mut y = self.mt[self.i];
-            y = y ^ ((y >> U) & D);
-            y = y ^ ((y << S) & B);
-            y = y ^ ((y << T) & C);
-            y = y ^ (y >> L);
-
-            self.i += 1;
-            return y >> (32 - n);
-        }
-    }
-
-    const ZERO_STATE: [u32; N] = [
-        2147483648, 766982754, 497961170, 3952298588, 2331775348, 1811986599, 3100132149,
-        3188119873, 3937547222, 215718963, 3315684082, 2978012849, 2428261856, 1298227695,
-        1704729580, 54668373, 3285201915, 3285178464, 1552935063, 988471319, 3135387943,
-        1691402966, 2757551880, 416056905, 907387413, 1072924981, 33903495, 2168419592, 2429050353,
-        831159753, 430343641, 3315943586, 1761671042, 864453023, 334804929, 1627478028, 2596811275,
-        3468733638, 3994375553, 1457139722, 3139722021, 1334790738, 2656639915, 3535811098,
-        1464315470, 2397423927, 885719490, 1140895889, 3284299483, 2854516462, 2734973817,
-        147484763, 792049954, 114360641, 3345458839, 1159898878, 1410498733, 2242989638, 453922141,
-        1344019764, 413870456, 3089405849, 1494382840, 470157779, 4266372830, 2831181573,
-        1361928602, 1589253513, 1381373062, 753045124, 987032420, 781978839, 2953638767,
-        3258570111, 3006718191, 1675218601, 1854232715, 3655829819, 1731242722, 2192104666,
-        1736665161, 740150002, 1195833394, 1610203160, 159492766, 4041488705, 3128952632,
-        2867295744, 3272632449, 886824304, 1791482600, 221114776, 3867175393, 4020804062,
-        1077871826, 1298953503, 996366221, 4149754679, 2483052703, 2615558283, 274318093,
-        1716359450, 4099129961, 1026774175, 288240973, 1459347562, 2365566296, 3690105224,
-        3065780221, 2050634722, 2652606621, 3185241207, 3026457375, 3456165734, 1880121515,
-        3398461093, 1795638629, 2379692076, 608668379, 1261955525, 84456522, 1913485156, 106878280,
-        757183891, 2913957588, 160418091, 2025664758, 141497907, 1657818026, 3053760160, 672193054,
-        4157546743, 223046484, 1623470498, 1201972930, 675008814, 684162366, 1738776330,
-        3025656654, 159760723, 1908867305, 3933381342, 2545706671, 467196949, 1427819885,
-        842150314, 4032903454, 2140851898, 3269883445, 975813755, 4177392955, 1556690684,
-        2535611513, 462962732, 67591358, 1729610528, 2025206740, 3153739740, 3255032049,
-        4186226368, 1070144624, 3107867195, 1621006038, 63742485, 835629717, 3189842019,
-        3950227584, 3184714559, 841836938, 1685394870, 657939920, 766156242, 1412314179,
-        1048281639, 4037161120, 2044490307, 1923947830, 3900790422, 907554295, 276417304,
-        860658646, 3574201134, 3508771399, 2110232300, 1636296241, 1405006077, 1093408401,
-        3243057343, 1519791182, 1994660136, 3829840937, 2644974199, 957955566, 3487641161,
-        1646922510, 1907939989, 3836029453, 3429168778, 201307778, 72550089, 2464394982,
-        1695794191, 3344785682, 996786130, 3589457196, 1241754792, 1291082245, 4224603667,
-        1194379475, 2693491244, 881186965, 2705535111, 445306946, 440274268, 1980827733,
-        2482488861, 3205215943, 2119332222, 2928713046, 1418736938, 652581136, 2474070665,
-        2208621536, 4171251876, 2303664214, 443762656, 2981912989, 2199228311, 2652261633,
-        3166738494, 3443009210, 3498764432, 424010848, 4065487566, 2262993542, 1756076712,
-        1477098233, 2742171915, 306185806, 3610666541, 923091830, 1034267993, 2336668648,
-        1880719718, 676878038, 3788797208, 3763351494, 3985428106, 1101865631, 1130501258,
-        3672967388, 3432003530, 4124438011, 1660392285, 4025484827, 2108074566, 3815409682,
-        42955331, 3248965569, 1643835718, 1246665668, 1071162194, 3814069229, 115491158, 985096811,
-        3311029186, 2990827378, 3101633320, 1648574497, 1470117052, 174145027, 2019894819,
-        2035501481, 459104123, 3507464599, 2093352659, 3369174406, 618767835, 4009895756,
-        935587447, 3956987426, 33753995, 307782427, 2473424805, 1440371818, 2382619594, 2138695812,
-        3164510238, 1318650933, 2910086616, 3886677510, 566832801, 3718063320, 1559818704,
-        183047272, 1142362855, 26306548, 645536402, 3875596208, 2272778168, 3512733409, 1897046338,
-        38248886, 2570759766, 1806313150, 860304898, 2433450338, 4124013408, 1216634590,
-        1275388896, 1169566669, 652504502, 761221427, 1448403764, 3129135949, 2513214949,
-        1269533687, 2413509541, 1226750363, 2450740925, 4094137910, 945759293, 3636927736,
-        3178020081, 2509964157, 3878869300, 1848504895, 2018369720, 1579755740, 1023627943,
-        924838836, 2653160914, 1812804174, 1521323076, 4012390528, 1338763317, 2608655937,
-        16022784, 1672945066, 2177189646, 2944458483, 2213810972, 1369873847, 1224017670,
-        130901785, 3595066712, 2259115284, 3316038259, 455873927, 2917250465, 3599550610,
-        1502173758, 684943436, 3079863840, 3144992244, 942855823, 1771140188, 2118780653,
-        3411494225, 2711180217, 4239611184, 1371891067, 3398566397, 3105518599, 1310665701,
-        3345178451, 2959821156, 242241789, 2148966880, 3192740583, 404401893, 3605380577,
-        1446464038, 3920522056, 2577523013, 1079274576, 286634372, 1752710796, 2351075979,
-        981312309, 3410516352, 3468455736, 1938779182, 1592494371, 1533303080, 88045436, 438252489,
-        1220512168, 3487004938, 3724852871, 1073434882, 3728218947, 2977555283, 4105408406,
-        3553772656, 1462006821, 3917158017, 119003006, 3470530198, 3439192457, 2829375771,
-        3555715155, 32324691, 588735808, 1459221702, 803072782, 2699519868, 1530797005, 79738580,
-        671990400, 4289511388, 3207115447, 2584684068, 832698998, 760958416, 1217440464,
-        2517898131, 2418819938, 3629956222, 3445024962, 206619378, 365007395, 522114139,
-        1707954431, 540423623, 1786750801, 369253262, 4239016754, 147889201, 1637777773, 236798285,
-        2806120188, 586972608, 2201782716, 1323327827, 819485723, 406078680, 3407345698,
-        1537169369, 1821691865, 527271655, 3751827102, 1465426495, 3321682429, 2179672664,
-        401355478, 1068871880, 24609462, 1403522408, 2311580015, 1532058170, 3877815340,
-        1768430711, 1619755157, 2832904331, 475102697, 354987331, 3295386430, 2816873951,
-        1039415736, 363972779, 1499307670, 2895506264, 3746345349, 2678027234, 3251899088,
-        955392878, 2329157295, 1343358773, 309573887, 2410178377, 2843173466, 361132917,
-        1755816798, 1319204283, 609284796, 1998842567, 1892325921, 223190385, 1483015769,
-        2876023365, 3876009312, 3199738344, 491524099, 160383137, 1219178873, 3870310498,
-        1114580266, 4279604166, 855339774, 1983818547, 2297848784, 4118592947, 4084409863,
-        2225095054, 4215601993, 946447434, 4205503762, 146088676, 778046685, 1876936928,
-        3157333726, 2173097090, 3215738813, 4135448234, 1219619643, 1936128689, 2897130162,
-        3336043946, 3779039524, 4200886837, 1359380925, 3402593091, 3140713935, 50855190,
-        3122065768, 1501584468, 2512255124, 687125154, 2666013386, 837819715, 3057258172,
-        3653455791, 2868624990, 322131992, 42534870, 4036564806, 798099710, 3533853670, 190914037,
-        3726947981, 2601169403, 602059656, 1365668439, 1918780004, 394790500, 277566007,
-        3891847777, 3365421094, 3139612253, 1380519090, 1183088424, 4203794803, 3049949521,
-        4214159484, 3446206962, 1875544460, 3207220027, 3288287026, 913535288, 178159620,
-        1410694581, 4190575040, 880731713, 1427805121, 404869072, 3413191414, 2865934056,
-        2899472677, 4239222733, 688404529, 3923323887, 933651074, 1199453686, 642723732,
-        2850614853, 3104368451, 3054041024, 3129913503, 2805843726, 1829781129, 3479062313,
-        650272704, 4224852052, 4085038685, 2616580676, 1793860711, 585126334, 2995262791,
-        520446536, 3855655015, 1571815563, 2240778227, 2051010344, 1694977983, 788402852,
-        1988089041, 2035558649, 1800063056, 1234412692, 2490862867, 417320514, 2415019489,
-        3374117797, 136034611, 898704236, 1247106941, 3923519397, 3563607190, 2454738671,
-        3522360389, 2672645476, 146828884, 3985140042, 4233949333, 1184742586, 860278824,
-        2815489967, 983483427, 3190081845, 3288865305, 3575181235, 1292151129, 4007823805,
-        4049420597, 3499391972, 1611182906, 1721268432, 2944249577, 2487212557, 789127738,
-        4027610014, 1057334138, 2902720905,
-    ];
-
-    let mut rng = MT19937::from_state(N, ZERO_STATE);
-    assert_eq!(rng.getrandbits(32), 0xd82c07cd);
-    assert_eq!(rng.getrandbits(32), 0x629f6fbe);
-    assert_eq!(rng.getrandbits(32), 0xc2094cac);
-    assert_eq!(rng.getrandbits(32), 0xe3e70682);
-    assert_eq!(rng.getrandbits(32), 0x6baa9455);
-    assert_eq!(rng.getrandbits(32), 0x0a5d2f34);
-    assert_eq!(rng.getrandbits(32), 0x42485e3a);
-    assert_eq!(rng.getrandbits(32), 0xf728b4fa);
-    assert_eq!(rng.getrandbits(32), 0x82e2e662);
-    assert_eq!(rng.getrandbits(32), 0x7c65c1e5);
 }
 
 fn main() {
     let mut breaker = MT19937Breaker::new();
     let vars = (0..N)
-        .map(|n| (0..32).map(move |i| format!("mt_{n}_{i}")))
+        .map(|n| (0..32).map(move |i| Variable(format!("mt_{n}_{i}"))))
         .flatten()
-        .collect::<Vec<_>>();
-    println!("{:?}", vars);
+        .collect::<BTreeSet<_>>();
+    let mut mat = Vec::with_capacity(vars.len());
 
-    for b in SeqGen(0).take(256 * 79) {
+    println!("feeding..");
+    for b in SeqGen(0).take(256 * 78) {
         breaker.feedbit(b);
         let (e, b) = breaker.system.last().unwrap();
-        let mut set = HashSet::new();
-        match e {
-            Expr::Xor(e) => {
-                for x in e {
-                    match x {
-                        Expr::Value(Value::Var(v)) => {
-                            set.insert(v.as_str());
-                        }
-                        _ => panic!("bad eq"),
-                    }
-                }
-                e
-            }
-            _ => {
-                panic!("bad eq")
-            }
-        };
+
         // matrix form
         let row = vars
             .iter()
-            .map(|x| if set.get(x.as_str()).is_some() { 1 } else { 0 })
+            .map(|x| e.0.get(&x).is_some())
+            .chain(iter::once(*b))
             .collect::<Vec<_>>();
-        println!("{:?} {}", row, b);
+        mat.push(row);
     }
+    println!("systom size {}", breaker.system.len());
+
+    println!("{:?}", vars);
+    for row in &mat {
+        for b in row {
+            print!("{}", if *b { 1 } else { 0 });
+        }
+        println!()
+    }
+    println!("solving...");
+
+    // # Creating a function to perform gaussian elimination on the given matrix mat
+    // def gauss_elem(mat):
+    //     num = len(mat)
+
+    //     for i in range(0, num):
+    //         # Searching the maximum value of a particular column
+    //         max_el = abs(mat[i][i])
+    //         # Row having the element of maximum value
+    //         max_row = i
+    //         for k in range(i + 1, num):
+    //             if abs(mat[k][i]) > max_el:
+    //                 max_el = abs(mat[k][i])
+    //                 max_row = k
+
+    //         # Swapping the maximum row with the current row
+    //         for k in range(i, n + 1):
+    //             temp = mat[max_row][k]
+    //             mat[max_row][k] = mat[i][k]
+    //             mat[i][k] = temp
+
+    //         # Chaning the value of the rows below the current row to 0
+    //         for k in range(i + 1, n):
+    //             curr = -mat[k][i] / mat[i][i]
+    //             for j in range(i, n + 1):
+    //                 if i == j:
+    //                     mat[k][j] = 0
+    //                 else:
+    //                     mat[k][j] += curr * mat[i][j]
+
+    //     # Solving the equation Ax = b for the created upper triangular matrix mat
+    //     l = [0 for i in range(n)]
+    //     for j in range(n - 1, -1, -1):
+    //         l[j] = mat[j][n] / mat[j][j]
+    //         for k in range(j - 1, -1, -1):
+    //             mat[k][n] -= mat[k][j] * l[j]
+    //     return l
+    let n = mat.len();
+    for i in 0..n {
+        // Searching the maximum value of a particular column
+        // i_max is the index of first occurence of 1 in column h
+        let i_max = (i..n)
+            .map(|k| mat[k][i])
+            .position(|i| i)
+            .unwrap_or_else(|| panic!("no 1 found in col {i}"));
+        // Swapping the maximum row with the current row
+        mat.swap(i, i_max);
+        // Chaning the value of the rows below the current row to 0
+        for k in i + 1..n {
+            let curr = match (mat[k][i], mat[i][i]) {
+                (_, false) => panic!("div by 0"),
+                (r, true) => r,
+            };
+            for j in i..n + 1 {
+                mat[k][j] = if i == j {
+                    false
+                } else {
+                    mat[k][j] ^ (curr && mat[i][j])
+                }
+            }
+        }
+    }
+
+    // let mut h = 0;
+    // let mut k = 0;
+    // while h < mat.len() && k < mat[k].len() {
+    //     // i_max is the index of first occurence of 1
+    //     let i_max = (h..mat.len())
+    //         .map(|i| mat[i][k])
+    //         .position(|i| i)
+    //         .unwrap_or_else(|| panic!("no 1 found in col {k}"));
+    //     if !mat[i_max][k] {
+    //         k += 1;
+    //     } else {
+    //         mat.swap(h, i_max);
+    //         for i in h + 1..mat.len() {
+    //             let f = match (mat[i][k], mat[h][k]) {
+    //                 (_, false) => panic!("div by 0"),
+    //                 (r, true) => r,
+    //             };
+    //             mat[i][k] = false;
+    //             for j in k + 1..mat[h].len() {
+    //                 // mat[i][j] -= mat[h][j] * f [mod 2]
+    //                 mat[i][j] ^= mat[h][j] && f;
+    //             }
+    //         }
+    //         h += 1;
+    //         k += 1;
+    //     }
+    // }
+    println!("done");
+
+    for (i, row) in mat.iter().enumerate() {
+        for (j, v) in row.iter().enumerate() {
+            // v should be true only when i == j
+            assert!((i == j) == *v)
+        }
+    }
+    // for (eq, r) in breaker.system {
+    //     println!("{eq}={r}");
+    // }
 }
